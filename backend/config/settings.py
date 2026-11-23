@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import sys
 from datetime import timedelta
+from urllib.parse import parse_qs, unquote, urlparse
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -95,12 +96,44 @@ DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 DB_HOST = os.getenv('DB_HOST', '127.0.0.1')
 DB_PORT = os.getenv('DB_PORT', '5432')
+DIRECT_DATABASE_URL = (
+    os.getenv('DATABASE_URL')
+    or os.getenv('POSTGRES_URL_NON_POOLING')
+    or os.getenv('POSTGRES_URL')
+)
+# Prisma Postgres provides a pooled URL for application traffic and a direct
+# URL for schema migrations. Supabase also exposes a non-pooling URL.
+IS_MIGRATE_COMMAND = len(sys.argv) > 1 and sys.argv[1] == 'migrate'
+POSTGRES_URL = (
+    DIRECT_DATABASE_URL if IS_MIGRATE_COMMAND else
+    os.getenv('DATABASE_URL_POOLED') or os.getenv('POSTGRES_URL') or DIRECT_DATABASE_URL
+)
 
 if DB_ENGINE == 'django.db.backends.sqlite3':
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'medicare_dev.sqlite3',
+        }
+    }
+elif POSTGRES_URL:
+    parsed_database_url = urlparse(POSTGRES_URL)
+    if parsed_database_url.scheme not in ('postgres', 'postgresql'):
+        raise ValueError('DATABASE_URL must use the postgres:// or postgresql:// scheme.')
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': unquote(parsed_database_url.path.lstrip('/')),
+            'USER': unquote(parsed_database_url.username or ''),
+            'PASSWORD': unquote(parsed_database_url.password or ''),
+            'HOST': parsed_database_url.hostname or '',
+            'PORT': str(parsed_database_url.port or 5432),
+            'OPTIONS': {
+                'sslmode': parse_qs(parsed_database_url.query).get('sslmode', ['require'])[0],
+            },
+            'DISABLE_SERVER_SIDE_CURSORS': True,
+            # Vercel functions are short-lived; avoid holding persistent DB connections.
+            'CONN_MAX_AGE': 0,
         }
     }
 else:
